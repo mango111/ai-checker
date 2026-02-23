@@ -1,17 +1,55 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+
+const FREE_LIMIT = 3
+const STORAGE_KEY = 'ai_checker_usage'
+
+interface UsageData {
+  date: string
+  count: number
+}
+
+function getUsage(): UsageData {
+  if (typeof window === 'undefined') return { date: '', count: 0 }
+  const stored = localStorage.getItem(STORAGE_KEY)
+  if (!stored) return { date: new Date().toDateString(), count: 0 }
+  const data = JSON.parse(stored) as UsageData
+  // 如果是新的一天，重置计数
+  if (data.date !== new Date().toDateString()) {
+    return { date: new Date().toDateString(), count: 0 }
+  }
+  return data
+}
+
+function setUsage(data: UsageData) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+}
 
 export default function Home() {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showPaywall, setShowPaywall] = useState(false)
+  const [remaining, setRemaining] = useState(FREE_LIMIT)
   const router = useRouter()
+
+  useEffect(() => {
+    const usage = getUsage()
+    setRemaining(FREE_LIMIT - usage.count)
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!url) return
+
+    // 检查免费次数
+    const usage = getUsage()
+    if (usage.count >= FREE_LIMIT) {
+      setShowPaywall(true)
+      return
+    }
 
     setLoading(true)
     setError('')
@@ -23,6 +61,11 @@ export default function Home() {
         checkUrl = 'https://' + url
       }
       new URL(checkUrl)
+
+      // 更新使用次数
+      const newUsage = { date: new Date().toDateString(), count: usage.count + 1 }
+      setUsage(newUsage)
+      setRemaining(FREE_LIMIT - newUsage.count)
 
       // 跳转到结果页
       router.push(`/result?url=${encodeURIComponent(checkUrl)}`)
@@ -45,8 +88,15 @@ export default function Home() {
           </p>
         </div>
 
+        {/* 剩余次数提示 */}
+        <div className="mb-4">
+          <span className={`text-sm ${remaining <= 1 ? 'text-orange-500' : 'text-slate-500'}`}>
+            今日剩余免费检测：{remaining} 次
+          </span>
+        </div>
+
         {/* 输入框 */}
-        <form onSubmit={handleSubmit} className="mt-8">
+        <form onSubmit={handleSubmit} className="mt-4">
           <div className="flex gap-3">
             <input
               type="text"
@@ -107,6 +157,65 @@ export default function Home() {
           支持 ChatGPT / Claude / Perplexity 等 AI 模型
         </p>
       </div>
+
+      {/* 付费引导弹窗 */}
+      {showPaywall && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-xl">
+            <div className="text-center">
+              <div className="text-5xl mb-4">🚀</div>
+              <h2 className="text-2xl font-bold text-slate-900">今日免费次数已用完</h2>
+              <p className="mt-3 text-slate-600">
+                升级到专业版，享受无限检测和更多高级功能
+              </p>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              <div className="p-4 border-2 border-blue-500 rounded-xl bg-blue-50">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-slate-900">专业版</p>
+                    <p className="text-sm text-slate-600">无限检测 + PDF导出 + 监控</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold text-blue-600">¥99</p>
+                    <p className="text-xs text-slate-500">/月</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 border border-slate-200 rounded-xl">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-slate-900">基础版</p>
+                    <p className="text-sm text-slate-600">50次/月 + 历史记录</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold text-slate-900">¥29</p>
+                    <p className="text-xs text-slate-500">/月</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              <button className="w-full py-3 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                立即升级
+              </button>
+              <button 
+                onClick={() => setShowPaywall(false)}
+                className="w-full py-3 text-slate-500 hover:text-slate-700 transition-colors"
+              >
+                明天再来
+              </button>
+            </div>
+
+            <p className="mt-4 text-center text-xs text-slate-400">
+              每日 0 点重置免费次数
+            </p>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
