@@ -2,8 +2,12 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
+import type { User } from '@supabase/supabase-js'
+import AuthModal from '@/components/AuthModal'
 
 const FREE_LIMIT = 3
+const PRO_LIMIT = 999999
 const STORAGE_KEY = 'ai_checker_usage'
 
 interface UsageData {
@@ -11,19 +15,18 @@ interface UsageData {
   count: number
 }
 
-function getUsage(): UsageData {
+function getLocalUsage(): UsageData {
   if (typeof window === 'undefined') return { date: '', count: 0 }
   const stored = localStorage.getItem(STORAGE_KEY)
   if (!stored) return { date: new Date().toDateString(), count: 0 }
   const data = JSON.parse(stored) as UsageData
-  // 如果是新的一天，重置计数
   if (data.date !== new Date().toDateString()) {
     return { date: new Date().toDateString(), count: 0 }
   }
   return data
 }
 
-function setUsage(data: UsageData) {
+function setLocalUsage(data: UsageData) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
 }
 
@@ -32,22 +35,44 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showPaywall, setShowPaywall] = useState(false)
+  const [showAuth, setShowAuth] = useState(false)
   const [remaining, setRemaining] = useState(FREE_LIMIT)
+  const [user, setUser] = useState<User | null>(null)
+  const [plan, setPlan] = useState<'free' | 'pro'>('free')
   const router = useRouter()
 
   useEffect(() => {
-    const usage = getUsage()
+    // 检查登录状态
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+
+    // 获取本地使用次数
+    const usage = getLocalUsage()
     setRemaining(FREE_LIMIT - usage.count)
+
+    return () => subscription.unsubscribe()
   }, [])
+
+  const getLimit = () => plan === 'pro' ? PRO_LIMIT : FREE_LIMIT
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!url) return
 
-    // 检查免费次数
-    const usage = getUsage()
-    if (usage.count >= FREE_LIMIT) {
-      setShowPaywall(true)
+    const usage = getLocalUsage()
+    const limit = getLimit()
+    
+    if (usage.count >= limit) {
+      if (!user) {
+        setShowAuth(true)
+      } else {
+        setShowPaywall(true)
+      }
       return
     }
 
@@ -55,19 +80,16 @@ export default function Home() {
     setError('')
 
     try {
-      // 验证 URL
       let checkUrl = url
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         checkUrl = 'https://' + url
       }
       new URL(checkUrl)
 
-      // 更新使用次数
       const newUsage = { date: new Date().toDateString(), count: usage.count + 1 }
-      setUsage(newUsage)
-      setRemaining(FREE_LIMIT - newUsage.count)
+      setLocalUsage(newUsage)
+      setRemaining(limit - newUsage.count)
 
-      // 跳转到结果页
       router.push(`/result?url=${encodeURIComponent(checkUrl)}`)
     } catch {
       setError('请输入有效的网址')
@@ -75,10 +97,42 @@ export default function Home() {
     }
   }
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setPlan('free')
+  }
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
+      {/* 顶部导航 */}
+      <div className="fixed top-0 left-0 right-0 p-4 flex justify-end gap-3">
+        {user ? (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-slate-600">{user.email}</span>
+            {plan === 'pro' && (
+              <span className="px-2 py-1 text-xs bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-full">
+                Pro
+              </span>
+            )}
+            <button
+              onClick={handleLogout}
+              className="text-sm text-slate-500 hover:text-slate-700"
+            >
+              退出
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowAuth(true)}
+            className="px-4 py-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
+          >
+            登录
+          </button>
+        )}
+      </div>
+
       <div className="w-full max-w-2xl text-center">
-        {/* Logo */}
         <div className="mb-8">
           <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
             AI Checker
@@ -88,14 +142,12 @@ export default function Home() {
           </p>
         </div>
 
-        {/* 剩余次数提示 */}
         <div className="mb-4">
           <span className={`text-sm ${remaining <= 1 ? 'text-orange-500' : 'text-slate-500'}`}>
-            今日剩余免费检测：{remaining} 次
+            {plan === 'pro' ? '无限检测' : `今日剩余免费检测：${Math.max(0, remaining)} 次`}
           </span>
         </div>
 
-        {/* 输入框 */}
         <form onSubmit={handleSubmit} className="mt-4">
           <div className="flex gap-3">
             <input
@@ -122,12 +174,9 @@ export default function Home() {
               ) : '检测'}
             </button>
           </div>
-          {error && (
-            <p className="mt-3 text-red-500 text-sm">{error}</p>
-          )}
+          {error && <p className="mt-3 text-red-500 text-sm">{error}</p>}
         </form>
 
-        {/* 说明 */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
           <div className="p-6 bg-white rounded-xl shadow-sm border border-slate-100">
             <div className="text-3xl mb-3">🔍</div>
@@ -152,11 +201,19 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Footer */}
         <p className="mt-16 text-sm text-slate-400">
           支持 ChatGPT / Claude / Perplexity 等 AI 模型
         </p>
       </div>
+
+      {/* 登录弹窗 */}
+      <AuthModal
+        isOpen={showAuth}
+        onClose={() => setShowAuth(false)}
+        onSuccess={() => {
+          setShowAuth(false)
+        }}
+      />
 
       {/* 付费引导弹窗 */}
       {showPaywall && (
@@ -164,55 +221,49 @@ export default function Home() {
           <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-xl">
             <div className="text-center">
               <div className="text-5xl mb-4">🚀</div>
-              <h2 className="text-2xl font-bold text-slate-900">今日免费次数已用完</h2>
+              <h2 className="text-2xl font-bold text-slate-900">
+                {user ? '升级到 Pro' : '今日免费次数已用完'}
+              </h2>
               <p className="mt-3 text-slate-600">
                 升级到专业版，享受无限检测和更多高级功能
               </p>
             </div>
 
             <div className="mt-6 space-y-3">
-              <div className="p-4 border-2 border-blue-500 rounded-xl bg-blue-50">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-semibold text-slate-900">专业版</p>
-                    <p className="text-sm text-slate-600">无限检测 + PDF导出 + 监控</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-blue-600">¥99</p>
-                    <p className="text-xs text-slate-500">/月</p>
-                  </div>
-                </div>
+              <div className="flex items-center gap-2 text-slate-700">
+                <span className="text-green-500">✓</span>
+                <span>无限次检测</span>
               </div>
-
-              <div className="p-4 border border-slate-200 rounded-xl">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <p className="font-semibold text-slate-900">基础版</p>
-                    <p className="text-sm text-slate-600">50次/月 + 历史记录</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-slate-900">¥29</p>
-                    <p className="text-xs text-slate-500">/月</p>
-                  </div>
-                </div>
+              <div className="flex items-center gap-2 text-slate-700">
+                <span className="text-green-500">✓</span>
+                <span>历史记录保存</span>
+              </div>
+              <div className="flex items-center gap-2 text-slate-700">
+                <span className="text-green-500">✓</span>
+                <span>PDF 报告导出</span>
+              </div>
+              <div className="flex items-center gap-2 text-slate-700">
+                <span className="text-green-500">✓</span>
+                <span>优先客服支持</span>
               </div>
             </div>
 
-            <div className="mt-6 space-y-3">
-              <button className="w-full py-3 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors">
-                立即升级
-              </button>
-              <button 
-                onClick={() => setShowPaywall(false)}
-                className="w-full py-3 text-slate-500 hover:text-slate-700 transition-colors"
+            <div className="mt-8">
+              <a
+                href="https://buy.stripe.com/test_xxx"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full py-3 text-center text-white bg-gradient-to-r from-purple-500 to-pink-500 rounded-xl font-medium hover:opacity-90 transition-opacity"
               >
-                明天再来
+                升级 Pro - $9/月
+              </a>
+              <button
+                onClick={() => setShowPaywall(false)}
+                className="w-full mt-3 py-2 text-slate-500 hover:text-slate-700"
+              >
+                稍后再说
               </button>
             </div>
-
-            <p className="mt-4 text-center text-xs text-slate-400">
-              每日 0 点重置免费次数
-            </p>
           </div>
         </div>
       )}
